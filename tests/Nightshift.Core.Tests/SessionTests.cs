@@ -31,7 +31,7 @@ public sealed class SessionTests : IDisposable
     }
 
     private PocSession Create(SessionOptions? options = null, Func<int, bool>? alive = null) =>
-        new(options ?? Fast(TimeSpan.FromMilliseconds(300)), new SessionDependencies
+        new(options ?? Fast(TimeSpan.FromMilliseconds(1500)), new SessionDependencies
         {
             Settings = _store,
             KeepAwake = _keepAwake,
@@ -43,6 +43,17 @@ public sealed class SessionTests : IDisposable
             Log = _log,
             IsProcessAlive = alive ?? (_ => true),
         });
+
+    /// <summary>Waits until settings are applied, instead of guessing with a fixed delay (CI machines are slow).</summary>
+    private static async Task WaitForRunningAsync(PocSession session)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (session.State != SessionState.Running && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(5);
+        }
+        Assert.Equal(SessionState.Running, session.State);
+    }
 
     private static SessionOptions Fast(TimeSpan? duration) => new()
     {
@@ -65,7 +76,7 @@ public sealed class SessionTests : IDisposable
         };
 
         var run = session.RunAsync(CancellationToken.None);
-        await Task.Delay(100);
+        await WaitForRunningAsync(session);
         _events.Raise(PowerEventKind.LidClosed);
         var result = await run;
 
@@ -91,7 +102,7 @@ public sealed class SessionTests : IDisposable
         _events.PowerEventReceived += _ => videoDuring = _store.Get(PowerSettingKeys.VideoPowerDownTimeout, PowerSource.AC);
 
         var run = session.RunAsync(CancellationToken.None);
-        await Task.Delay(100);
+        await WaitForRunningAsync(session);
         _events.Raise(PowerEventKind.DisplayOff);
         await run;
 
@@ -201,7 +212,7 @@ public sealed class SessionTests : IDisposable
         var session = Create(Fast(null));
         using var cts = new CancellationTokenSource();
         var run = session.RunAsync(cts.Token);
-        await Task.Delay(100);
+        await WaitForRunningAsync(session);
 
         var first = session.RestoreNow();
         Assert.True(first!.Success);
