@@ -10,6 +10,9 @@ public interface IClientIdentityResolver
 {
     /// <returns>The caller, or null if the caller cannot be authenticated (the connection is then refused).</returns>
     ClientIdentity? Resolve(NamedPipeServerStream pipe);
+
+    /// <summary>Why the last resolution failed, for the service log.</summary>
+    string? LastFailure => null;
 }
 
 /// <summary>
@@ -19,30 +22,56 @@ public interface IClientIdentityResolver
 [SupportedOSPlatform("windows")]
 public sealed class WindowsPipeClientIdentityResolver : IClientIdentityResolver
 {
+    /// <summary>Why the last resolution failed (for the service log); null after a success.</summary>
+    public string? LastFailure { get; private set; }
+
     public ClientIdentity? Resolve(NamedPipeServerStream pipe)
     {
         ArgumentNullException.ThrowIfNull(pipe);
-        ClientIdentity? identity = null;
+        SecurityIdentifier? sid = null;
+        var isAdmin = false;
+        var rejected = false;
         try
         {
+            // Keep the impersonated section minimal: read the token's SID and group membership only.
             pipe.RunAsClient(() =>
             {
-                using var wi = WindowsIdentity.GetCurrent(System.Security.Principal.TokenAccessLevels.Query);
+                using var wi = WindowsIdentity.GetCurrent(TokenAccessLevels.Query);
                 if (wi.IsAnonymous || wi.IsGuest || wi.User is null)
                 {
+                    rejected = true;
                     return;
                 }
-                var principal = new WindowsPrincipal(wi);
-                var isAdmin = principal.IsInRole(WindowsBuiltInRole.Administrator)
-                              || wi.User.IsWellKnown(WellKnownSidType.LocalSystemSid);
-                identity = new ClientIdentity(wi.User.Value, wi.Name, isAdmin);
+                sid = wi.User;
+                isAdmin = wi.User.IsWellKnown(WellKnownSidType.LocalSystemSid)
+                          || new WindowsPrincipal(wi).IsInRole(WindowsBuiltInRole.Administrator);
             });
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+#pragma warning disable CA1031 // any failure to identify the caller means "not authenticated", never a crash
+        catch (Exception ex)
+#pragma warning restore CA1031
         {
+            LastFailure = $"{ex.GetType().Name}: {ex.Message}";
             return null;
         }
-        return identity;
+        if (rejected || sid is null)
+        {
+            LastFailure = "anonymous, guest or unidentified caller";
+            return null;
+        }
+
+        // Account-name lookup happens outside impersonation (it may need access the client token lacks).
+        string name;
+        try
+        {
+            name = sid.Translate(typeof(NTAccount)).Value;
+        }
+        catch (Exception ex) when (ex is IdentityNotMappedException or SystemException)
+        {
+            name = sid.Value;
+        }
+        LastFailure = null;
+        return new ClientIdentity(sid.Value, name, isAdmin);
     }
 }
 

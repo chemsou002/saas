@@ -102,6 +102,14 @@ jobs:
 
           ./installer/uninstall-service.ps1 -RemoveData
           if (Get-Service NightshiftService -ErrorAction SilentlyContinue) { throw 'Service still installed' }
+      - name: service diagnostics
+        if: failure()
+        shell: pwsh
+        run: |
+          sc.exe qc NightshiftService
+          sc.exe qprivs NightshiftService
+          Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'NightshiftService', '.NET Runtime', 'Application Error' } -MaxEvents 60 -ErrorAction SilentlyContinue |
+            Format-List TimeCreated, ProviderName, LevelDisplayName, Message
       - uses: actions/upload-artifact@v4
         with:
           name: nightshift-win-x64

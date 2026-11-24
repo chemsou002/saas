@@ -5,6 +5,7 @@ using System.Security.Principal;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Nightshift.Core.Engine;
 
 namespace Nightshift.Ipc;
 
@@ -114,7 +115,10 @@ public sealed partial class IpcServer(
 
     private async Task HandleConnectionAsync(NamedPipeServerStream pipe, CancellationToken ct)
     {
-        var caller = identityResolver.Resolve(pipe);
+        // Identity is resolved after the first frame: Windows only allows impersonating a pipe client once the
+        // server has read data from it (ERROR_CANNOT_IMPERSONATE otherwise).
+        ClientIdentity? caller = null;
+        var resolved = false;
 
         while (pipe.IsConnected && !ct.IsCancellationRequested)
         {
@@ -141,14 +145,47 @@ public sealed partial class IpcServer(
             {
                 return;
             }
+            if (!resolved)
+            {
+                resolved = true;
+                caller = ResolveCaller(pipe);
+            }
             if (caller is null)
             {
                 // Answer the request (so the client gets a clear error, not a timeout), then disconnect.
                 await WriteFinalAsync(pipe, IpcResponse.Failure(null, IpcErrorCodes.Unauthenticated, "Caller could not be authenticated."), ct).ConfigureAwait(false);
                 return;
             }
-            var response = handler.Handle(frame, caller);
+            IpcResponse response;
+            try
+            {
+                response = handler.Handle(frame, caller);
+            }
+            catch (Exception ex)
+            {
+                LogConnectionError(_logger, ex);
+                await WriteFinalAsync(pipe, IpcResponse.Failure(null, EngineErrorCodes.InternalError, "The service could not process the request."), ct).ConfigureAwait(false);
+                return;
+            }
             await WriteAsync(pipe, response, ct).ConfigureAwait(false);
+        }
+    }
+
+    private ClientIdentity? ResolveCaller(NamedPipeServerStream pipe)
+    {
+        try
+        {
+            var caller = identityResolver.Resolve(pipe);
+            if (caller is null && identityResolver.LastFailure is { } why)
+            {
+                LogIdentityFailed(_logger, "resolver", why);
+            }
+            return caller;
+        }
+        catch (Exception ex)
+        {
+            LogIdentityFailed(_logger, ex.GetType().Name, ex.Message);
+            return null;
         }
     }
 
@@ -212,9 +249,12 @@ public sealed partial class IpcServer(
         return security;
     }
 
+    [LoggerMessage(Level = LogLevel.Warning, Message = "IPC caller could not be identified ({Kind}): {Reason}")]
+    private static partial void LogIdentityFailed(ILogger logger, string kind, string reason);
+
     [LoggerMessage(Level = LogLevel.Information, Message = "IPC listening on pipe {Pipe} ({Max} connections)")]
     private static partial void LogStarted(ILogger logger, string pipe, int max);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "IPC connection error")]
+    [LoggerMessage(Level = LogLevel.Error, Message = "IPC connection error")]
     private static partial void LogConnectionError(ILogger logger, Exception ex);
 }
