@@ -1,0 +1,65 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet test -c Release
+
+  windows-smoke:
+    # Exercises the real Win32 power APIs on a Windows VM. A VM has no lid or battery, so this checks
+    # detection, the power request, restore and crash recovery — not closed-lid behaviour.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet test -c Release
+      - run: dotnet publish src/Nightshift.Poc -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o out
+      - name: detect
+        shell: pwsh
+        run: |
+          ./out/nightshift-poc.exe detect
+          ./out/nightshift-poc.exe detect --json --no-powercfg | Out-File detect-before.json
+      - name: session holds a system-required power request, then restores
+        shell: pwsh
+        run: |
+          $p = Start-Process ./out/nightshift-poc.exe -ArgumentList 'session','--duration','25s','--launch-heartbeat','--ack-ventilation','--display-off','idle-timeout' -PassThru -NoNewWindow -RedirectStandardOutput session.txt
+          Start-Sleep -Seconds 10
+          $requests = powercfg /requests | Out-String
+          Write-Output $requests
+          $p.WaitForExit()
+          Get-Content session.txt
+          if ($requests -notmatch 'nightshift-poc') { throw 'Power request not visible in powercfg /requests' }
+          if ($p.ExitCode -ne 0) { throw "session exited with $($p.ExitCode)" }
+          ./out/nightshift-poc.exe detect --json --no-powercfg | Out-File detect-after.json
+          $before = (Get-Content detect-before.json | ConvertFrom-Json).settings | ConvertTo-Json -Depth 5
+          $after  = (Get-Content detect-after.json  | ConvertFrom-Json).settings | ConvertTo-Json -Depth 5
+          if ($before -ne $after) { throw "Settings not restored.`nBefore: $before`nAfter: $after" }
+      - name: crash recovery
+        shell: pwsh
+        run: |
+          $p = Start-Process ./out/nightshift-poc.exe -ArgumentList 'session','--duration','10m','--ack-ventilation','--display-off','idle-timeout' -PassThru -NoNewWindow
+          Start-Sleep -Seconds 6
+          Stop-Process -Id $p.Id -Force
+          Start-Sleep -Seconds 1
+          ./out/nightshift-poc.exe status
+          ./out/nightshift-poc.exe restore
+          if ($LASTEXITCODE -ne 0) { throw 'restore failed' }
+          ./out/nightshift-poc.exe detect --json --no-powercfg | Out-File detect-final.json
+          $before = (Get-Content detect-before.json | ConvertFrom-Json).settings | ConvertTo-Json -Depth 5
+          $final  = (Get-Content detect-final.json  | ConvertFrom-Json).settings | ConvertTo-Json -Depth 5
+          if ($before -ne $final) { throw "Settings not restored after crash.`nBefore: $before`nAfter: $final" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nightshift-poc-win-x64
+          path: out/nightshift-poc.exe
