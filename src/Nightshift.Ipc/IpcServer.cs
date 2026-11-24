@@ -115,11 +115,6 @@ public sealed partial class IpcServer(
     private async Task HandleConnectionAsync(NamedPipeServerStream pipe, CancellationToken ct)
     {
         var caller = identityResolver.Resolve(pipe);
-        if (caller is null)
-        {
-            await WriteAsync(pipe, IpcResponse.Failure(null, IpcErrorCodes.Unauthenticated, "Caller could not be authenticated."), ct).ConfigureAwait(false);
-            return;
-        }
 
         while (pipe.IsConnected && !ct.IsCancellationRequested)
         {
@@ -133,8 +128,9 @@ public sealed partial class IpcServer(
                 }
                 catch (IpcProtocolException ex)
                 {
-                    await WriteAsync(pipe, IpcResponse.Failure(null, ex.Code, ex.Message), ct).ConfigureAwait(false);
-                    return; // the stream position is unknown after a bad frame: drop the connection
+                    // The stream position is unknown after a bad frame: answer, then drop the connection.
+                    await WriteFinalAsync(pipe, IpcResponse.Failure(null, ex.Code, ex.Message), ct).ConfigureAwait(false);
+                    return;
                 }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                 {
@@ -145,8 +141,35 @@ public sealed partial class IpcServer(
             {
                 return;
             }
+            if (caller is null)
+            {
+                // Answer the request (so the client gets a clear error, not a timeout), then disconnect.
+                await WriteFinalAsync(pipe, IpcResponse.Failure(null, IpcErrorCodes.Unauthenticated, "Caller could not be authenticated."), ct).ConfigureAwait(false);
+                return;
+            }
             var response = handler.Handle(frame, caller);
             await WriteAsync(pipe, response, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Writes a last response before the server closes the connection. On Windows, disconnecting a server pipe
+    /// discards data the client has not read yet, so wait (bounded) until the client has drained it.
+    /// </summary>
+    private static async Task WriteFinalAsync(NamedPipeServerStream pipe, IpcResponse response, CancellationToken ct)
+    {
+        await WriteAsync(pipe, response, ct).ConfigureAwait(false);
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        try
+        {
+            await Task.Run(pipe.WaitForPipeDrain, ct).WaitAsync(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or TimeoutException or OperationCanceledException or ObjectDisposedException)
+        {
+            // Client went away or is not reading; closing is correct either way.
         }
     }
 
