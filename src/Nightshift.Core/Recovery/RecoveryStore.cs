@@ -4,10 +4,23 @@ using Nightshift.Core.Util;
 
 namespace Nightshift.Core.Recovery;
 
-/// <summary>Stores the recovery record on disk using atomic writes.</summary>
-public sealed class RecoveryStore(string path)
+/// <summary>Durable storage of the single active recovery record.</summary>
+public interface IRecoveryStore
 {
-    internal static readonly JsonSerializerOptions JsonOptions = new()
+    bool Exists { get; }
+
+    RecoveryRecord? Load();
+
+    /// <summary>Must be durable when it returns: the caller writes system settings right after.</summary>
+    void Save(RecoveryRecord record);
+
+    void Delete();
+}
+
+/// <summary>Stores the recovery record in a JSON file using atomic writes (Phase 1 CLI).</summary>
+public sealed class RecoveryStore(string path) : IRecoveryStore
+{
+    public static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
         Converters = { new JsonStringEnumConverter() },

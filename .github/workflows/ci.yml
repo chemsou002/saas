@@ -59,7 +59,54 @@ jobs:
           $before = (Get-Content detect-before.json | ConvertFrom-Json).settings | ConvertTo-Json -Depth 5
           $final  = (Get-Content detect-final.json  | ConvertFrom-Json).settings | ConvertTo-Json -Depth 5
           if ($before -ne $final) { throw "Settings not restored after crash.`nBefore: $before`nAfter: $final" }
+      - name: "phase 2: install service, drive sessions over IPC, crash recovery, uninstall"
+        shell: pwsh
+        run: |
+          dotnet publish src/Nightshift.Service -c Release -r win-x64 --self-contained true -o out/service
+          dotnet publish src/Nightshift.Ctl -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o out/ctl
+          ./installer/install-service.ps1 -Source out/service -CtlSource out/ctl
+          $ctl = Join-Path $env:ProgramFiles 'Nightshift\nightshiftctl.exe'
+          function Settings { (./out/nightshift-poc.exe detect --json --no-powercfg | ConvertFrom-Json).settings | ConvertTo-Json -Depth 5 }
+          function Ctl { & $ctl @args; if ($LASTEXITCODE -ne 0) { throw "nightshiftctl $args failed ($LASTEXITCODE)" } }
+          $before = Settings
+          Ctl system
+
+          Ctl start --duration 10m --ack-ventilation
+          $requests = powercfg /requests | Out-String
+          Write-Output $requests
+          if ($requests -notmatch 'Nightshift') { throw 'Service power request not visible in powercfg /requests' }
+          Ctl pause
+          if ((Settings) -ne $before) { throw 'Settings not restored on pause' }
+          Ctl resume
+          Ctl status
+          Ctl stop
+          if ((Settings) -ne $before) { throw 'Settings not restored on stop' }
+
+          # Unexpected termination: kill the service process; the SCM restarts it and startup recovery restores.
+          Ctl start --duration unlimited --ack-ventilation
+          $old = (Get-Process -Name Nightshift.Service).Id
+          Stop-Process -Id $old -Force
+          $deadline = (Get-Date).AddSeconds(90)
+          do {
+            Start-Sleep -Seconds 2
+            $p = Get-Process -Name Nightshift.Service -ErrorAction SilentlyContinue
+          } until (($p -and $p.Id -ne $old -and (Get-Service NightshiftService).Status -eq 'Running') -or (Get-Date) -gt $deadline)
+          if (-not $p -or $p.Id -eq $old) { throw 'Service was not restarted by the SCM' }
+          Start-Sleep -Seconds 3
+          $status = & $ctl status --json | ConvertFrom-Json
+          if ($status.active.sessionId) { throw 'Interrupted session is still active' }
+          if ($status.last.status -ne 'Interrupted') { throw "Expected last session Interrupted, got $($status.last.status)" }
+          if ((Settings) -ne $before) { throw 'Settings not restored after crash recovery' }
+          $sys = & $ctl system --json | ConvertFrom-Json
+          if ($sys.service.previousShutdownClean -ne $false) { throw 'Unclean shutdown not detected' }
+
+          ./installer/uninstall-service.ps1 -RemoveData
+          if (Get-Service NightshiftService -ErrorAction SilentlyContinue) { throw 'Service still installed' }
       - uses: actions/upload-artifact@v4
         with:
-          name: nightshift-poc-win-x64
-          path: out/nightshift-poc.exe
+          name: nightshift-win-x64
+          path: |
+            out/nightshift-poc.exe
+            out/service
+            out/ctl
+            installer

@@ -185,3 +185,28 @@ internal static partial class User32
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool UnregisterPowerSettingNotification(nint handle);
 }
+
+internal static unsafe partial class PowrProfNotify
+{
+    public const uint DeviceNotifyCallback = 2;
+
+    /// <summary>DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct DeviceNotifySubscribeParameters
+    {
+        public delegate* unmanaged[Stdcall]<nint, uint, nint, uint> Callback;
+        public nint Context;
+    }
+
+    [LibraryImport("powrprof.dll")]
+    public static partial uint PowerSettingRegisterNotification(in Guid settingGuid, uint flags, DeviceNotifySubscribeParameters* recipient, out nint registrationHandle);
+
+    [LibraryImport("powrprof.dll")]
+    public static partial uint PowerSettingUnregisterNotification(nint registrationHandle);
+
+    [LibraryImport("powrprof.dll")]
+    public static partial uint PowerRegisterSuspendResumeNotification(uint flags, DeviceNotifySubscribeParameters* recipient, out nint registrationHandle);
+
+    [LibraryImport("powrprof.dll")]
+    public static partial uint PowerUnregisterSuspendResumeNotification(nint registrationHandle);
+}

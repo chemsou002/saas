@@ -14,7 +14,7 @@ public sealed record SessionDependencies
     public required IPowerStatusProvider PowerStatus { get; init; }
     public required IDisplayController Display { get; init; }
     public required IPowerEventSource PowerEvents { get; init; }
-    public required RecoveryStore Recovery { get; init; }
+    public required IRecoveryStore Recovery { get; init; }
     public required SessionEventLog Log { get; init; }
     public TimeProvider Time { get; init; } = TimeProvider.System;
 

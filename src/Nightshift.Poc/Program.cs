@@ -228,6 +228,12 @@ internal static class Program
             return 1;
         }
 
+        // The service and this PoC both modify the lid action: never run them at the same time.
+        if (await ServiceSessionActiveAsync().ConfigureAwait(false))
+        {
+            return Fail("The NIGHTSHIFT service is running a session. Stop it first (nightshiftctl stop).");
+        }
+
         // Mandatory ventilation warning: shown every session, acknowledgement required the first time.
         Console.ForegroundColor = ConsoleColor.Yellow;
         Console.WriteLine("\n" + SafetyText.VentilationWarning + "\n");
@@ -329,6 +335,19 @@ internal static class Program
             Console.WriteLine($"\nVerify a test app with: nightshift-poc verify --heartbeat <file> --session-log \"{logPath}\"");
         }
         return result.Error is null && result.Restore?.Success != false ? 0 : 1;
+    }
+
+    private static async Task<bool> ServiceSessionActiveAsync()
+    {
+        try
+        {
+            var status = await new Nightshift.Ipc.NightshiftClient(timeout: TimeSpan.FromSeconds(2)).GetSessionStatusAsync().ConfigureAwait(false);
+            return status.Active.HasSession;
+        }
+        catch (Exception ex) when (ex is Nightshift.Ipc.ServiceUnavailableException or Nightshift.Ipc.IpcRemoteException or Nightshift.Ipc.IpcProtocolException)
+        {
+            return false; // service not installed / not running
+        }
     }
 
     /// <summary>Crash recovery: a record whose owner process is gone means an interrupted session.</summary>

@@ -10,5 +10,6 @@
   <ItemGroup>
     <ProjectReference Include="..\Nightshift.Core\Nightshift.Core.csproj" />
     <ProjectReference Include="..\Nightshift.Windows\Nightshift.Windows.csproj" />
+    <ProjectReference Include="..\Nightshift.Ipc\Nightshift.Ipc.csproj" />
   </ItemGroup>
 </Project>

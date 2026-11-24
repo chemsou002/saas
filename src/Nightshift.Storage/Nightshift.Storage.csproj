@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- SQLite persistence: sessions, events, recovery record, service health. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Nightshift.Storage</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.15" />
+    <!-- Explicit: picks up the patched native SQLite (GHSA-2m69-gcr7-jv3q affects 2.1.11). -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.14" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Nightshift.Core\Nightshift.Core.csproj" />
+  </ItemGroup>
+</Project>

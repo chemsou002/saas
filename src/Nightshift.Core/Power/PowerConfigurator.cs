@@ -33,7 +33,7 @@ public sealed record RestoreReport(IReadOnlyList<RestoreItem> Items)
 /// Applies power-scheme changes with a durable undo log, and restores them.
 /// Invariant: the original value of a setting is on disk before that setting is written.
 /// </summary>
-public sealed class PowerConfigurator(IPowerSettingsStore store, RecoveryStore recovery)
+public sealed class PowerConfigurator(IPowerSettingsStore store, IRecoveryStore recovery)
 {
     /// <summary>
     /// Applies <paramref name="plan"/> to the active scheme. On failure every change already made is

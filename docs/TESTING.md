@@ -1,8 +1,29 @@
+# Testing
+
+## Automated tests
+
+```bash
+dotnet test        # 127 tests; the 7 Windows integration tests are skipped on non-Windows hosts
+```
+
+| Project | Count | What it covers | How |
+|---|---|---|---|
+| `Nightshift.Core.Tests` | 52 | Phase 1: backup-before-write, rollback, recovery, user-change protection, battery stop, heartbeat analysis | fakes |
+| `Nightshift.Engine.Tests` | 68 | Phase 2: timed/unlimited sessions, stop, pause/resume, persistence of every model field, duplicate prevention (in memory **and** by the SQLite unique index), authorization, AC→battery / battery→AC, AC-only grace, suspend/resume, service restart, unexpected termination, restore conflicts, pending-restore retry, monitoring-failure safe stop, IPC round trip, IPC validation and failure cases (malformed/oversized frames, abrupt disconnects, silent clients, missing service, unauthenticated callers, error-detail leakage) | fake power layer + `FakeTimeProvider`, **real** SQLite files, **real** named pipes, real `SessionWorker` |
+| `Nightshift.Windows.IntegrationTests` | 7 | real PowrProf read/write/restore through SQLite recovery, power request, window-less notifications, secured pipe + real caller identity, pipe-squatting detection, pipe ACL | real Windows APIs (CI `windows-latest`) |
+
+The CI Windows job additionally installs the real service, drives it with `nightshiftctl`
+(start → `powercfg /requests` check → pause → resume → stop, verifying settings after each), kills the service
+process, waits for the SCM restart and verifies recovery (`Interrupted`, settings identical, unclean shutdown
+detected), then uninstalls.
+
+**What automated tests do not prove:** that a given laptop keeps running with the lid closed, that recovery
+works after a real power loss, or anything about heat. A GitHub VM has no lid, battery or Modern Standby.
+Hardware-level recovery has **not** been validated by these tests.
+
 # Phase 1 — Hardware Test Procedure & Compatibility Report
 
-Automated tests (`dotnet test`) cover the logic: backup-before-write, rollback on failure, crash recovery,
-not overwriting user changes, battery safe-stop, state logging and heartbeat analysis.
-**They cannot prove anything about real hardware.** The procedure below must be run on each physical laptop.
+The procedure below must be run on each physical laptop.
 
 ## Prerequisites
 
@@ -62,6 +83,33 @@ reaches the threshold. Plug/unplug events appear in the log as power-source chan
 
 On a managed/OEM image where a non-elevated write is refused: the session must report the need for an
 elevated terminal and `detect` must show unchanged values.
+
+# Phase 2 — Service tests on real hardware (manual)
+
+Build and install (elevated PowerShell):
+```powershell
+dotnet publish src/Nightshift.Service -c Release -r win-x64 --self-contained -o out/service
+dotnet publish src/Nightshift.Ctl -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -o out/ctl
+.\installer\install-service.ps1
+$ctl = "$env:ProgramFiles\Nightshift\nightshiftctl.exe"
+```
+Then, from a **normal (non-elevated)** terminal:
+
+| # | Test | Expected |
+|---|---|---|
+| S1 | `& $ctl system` | healthy, capabilities match `nightshift-poc detect` |
+| S2 | `& $ctl start --duration 10m --ack-ventilation`, **close the terminal**, close the lid 5 min, reopen, `& $ctl status` | session kept running without any client; lid events in history; completes and restores at 10 min |
+| S3 | `start --duration unlimited`, pause, wait, resume, stop | settings original while paused and after stop; elapsed excludes pause |
+| S4 | Unplug the charger during a session; plug it back | `powerSource` follows; on `--ac-only` the session stops after 60 s unplugged |
+| S5 | Battery: `start --duration unlimited --battery-warning 95 --battery-critical 94` unplugged | Warning state, then SafeStopped + restore |
+| S6 | `taskkill /F /IM Nightshift.Service.exe` during a session | SCM restarts within ~5 s; last session `Interrupted`; settings original |
+| S7 | During a session, change the lid action in Control Panel, then kill the service | after restart your change is kept (not overwritten) |
+| S8 | Hard power-off during a session (hold power button), boot | after boot, service recovers: `Interrupted`, settings original |
+| S9 | Sleep via Start menu during a session, wake | suspend + resume recorded; expired timed session ends after resume |
+| S10 | Second user (fast user switching) runs `& $ctl stop` | `NOT_AUTHORIZED` (unless administrator) |
+| S11 | `.\installer\uninstall-service.ps1` during a session | settings restored, service removed |
+
+Record results in the table below (add a "Service" column note).
 
 ## Compatibility report (fill in one row per device)
 
